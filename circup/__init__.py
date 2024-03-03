@@ -1070,9 +1070,14 @@ def main(  # pylint: disable=too-many-locals
     ctx.ensure_object(dict)
     global REQUESTS_TIMEOUT
     ctx.obj["TIMEOUT"] = REQUESTS_TIMEOUT = timeout
-    device_path = get_device_path(host, password, path)
+    print(f"host in main: {host}")
+    print(f'ctx host: {ctx.params["host"]}')
 
-    using_webworkflow = "host" in ctx.params.keys() and ctx.params["host"] is not None
+    using_webworkflow = "password" in ctx.params.keys() and ctx.params["password"] is not None
+    if using_webworkflow:
+        if host is None:
+            host = "circuitpython.local"
+    device_path = get_device_path(host, password, path)
 
     if using_webworkflow:
         try:

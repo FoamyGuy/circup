@@ -241,13 +241,24 @@ class WebBackend(Backend):
                 else ""
             ) from exc
 
+
+
         self.LIB_DIR_PATH = "fs/lib/"
         self.host = host
+        if self.host == "circuitpython.local":
+            click.echo("Checking versions.json on circuitpython.local to find hostname")
+            versions_resp = requests.get("http://circuitpython.local/cp/version.json", timeout=timeout)
+            print(versions_resp)
+            self.host = f'{versions_resp.json()["hostname"]}.local'
+            click.echo(f"Using hostname: {self.host}")
+
+        
         self.password = password
         self.device_location = f"http://:{self.password}@{self.host}"
 
         self.session = requests.Session()
         self.session.mount(self.device_location, HTTPAdapter(max_retries=5))
+
         self.library_path = self.device_location + "/" + self.LIB_DIR_PATH
         self.timeout = timeout
 
@@ -476,6 +487,8 @@ class WebBackend(Backend):
     def _create_library_directory(self, device_path, library_path):
         url = urlparse(device_path)
         auth = HTTPBasicAuth("", url.password)
+        print(f"device_path: {device_path}")
+        print(f"library_path: {library_path}")
         with self.session.put(library_path, auth=auth, timeout=self.timeout) as r:
             r.raise_for_status()
 
@@ -543,6 +556,7 @@ class WebBackend(Backend):
         print(f"Uninstalling {module_path}")
         url = urlparse(device_path)
         auth = HTTPBasicAuth("", url.password)
+        print(f"module_path: {module_path}")
         with self.session.delete(module_path, auth=auth, timeout=self.timeout) as r:
             r.raise_for_status()
 

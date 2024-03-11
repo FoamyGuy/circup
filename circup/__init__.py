@@ -1280,6 +1280,7 @@ def install(ctx, modules, pyext, requirement, auto, auto_file):  # pragma: no co
         to_install = sorted(to_install)
         click.echo(f"Ready to install: {to_install}\n")
         for library in to_install:
+            print("calling install_module")
             ctx.obj["backend"].install_module(
                 ctx.obj["DEVICE_PATH"], device_modules, library, pyext, mod_names
             )

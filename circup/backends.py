@@ -16,7 +16,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from requests.auth import HTTPBasicAuth
 
-
 from circup.shared import DATA_DIR, BAD_FILE_FORMAT, extract_metadata, _get_modules_file
 
 #: The location to store a local copy of code.py for use with --auto and
@@ -93,7 +92,7 @@ class Backend:
 
     # pylint: disable=too-many-locals,too-many-branches,too-many-arguments,too-many-nested-blocks
     def install_module(
-        self, device_path, device_modules, name, pyext, mod_names
+            self, device_path, device_modules, name, pyext, mod_names
     ):  # pragma: no cover
         """
         Finds a connected device and installs a given module name if it
@@ -109,6 +108,7 @@ class Backend:
         :param mod_names: Dictionary of metadata from modules that can be generated
                            with get_bundle_versions()
         """
+        print("inside install_module")
         if not name:
             click.echo("No module name(s) provided.")
         elif name in mod_names:
@@ -141,7 +141,7 @@ class Backend:
                             self.logger.error(
                                 f"Error: {e} - Skipping file in space calculation: {fp}"
                             )
-
+            print("about to try get_free_space()")
             if self.get_free_space() < bundle.size:
                 self.logger.error(
                     f"Aborted installing module {name} - "
@@ -153,15 +153,23 @@ class Backend:
                     fg="red",
                 )
                 return
-
+            
+            print("after get_free_space()")
             # Create the library directory first.
-            self._create_library_directory(device_path, library_path)
+            
+            print(f"module name is: {name}")
+            
+            try:
+                self._create_library_directory(device_path, library_path)
+            except Exception as e:
+                print(f"caught exception of type: {type(e)}")
 
             if pyext:
                 # Use Python source for module.
                 self._install_module_py(metadata)
             else:
                 # Use pre-compiled mpy modules.
+                print("about to call install module mpy")
                 self._install_module_mpy(bundle, metadata)
             click.echo("Installed '{}'.".format(name))
         else:
@@ -272,7 +280,10 @@ class WebBackend(Backend):
         auth = HTTPBasicAuth("", self.password)
 
         with open(source, "rb") as fp:
+            print(f"target: {target}")
             r = self.session.put(target, fp.read(), auth=auth, timeout=self.timeout)
+            print(f"resp status: {r.status_code}")
+            print(r.text)
             if r.status_code == 409:
                 _writeable_error()
             r.raise_for_status()
@@ -282,6 +293,7 @@ class WebBackend(Backend):
         Install directory to device using web workflow.
         :param source source directory.
         """
+        print("inside install_dir_http")
         mod_name = source.split(os.path.sep)
         mod_name = mod_name[-2] if mod_name[-1] == "" else mod_name[-1]
         target = self.device_location + "/" + self.LIB_DIR_PATH + mod_name
@@ -291,6 +303,8 @@ class WebBackend(Backend):
 
         # Create the top level directory.
         with self.session.put(target, auth=auth, timeout=self.timeout) as r:
+            print(f"resp status: {r.status_code}")
+            print(r.text)
             if r.status_code == 409:
                 _writeable_error()
             r.raise_for_status()
@@ -317,7 +331,7 @@ class WebBackend(Backend):
                 )
 
                 with self.session.put(
-                    path_to_create, auth=auth, timeout=self.timeout
+                        path_to_create, auth=auth, timeout=self.timeout
                 ) as r:
                     if r.status_code == 409:
                         _writeable_error()
@@ -334,7 +348,7 @@ class WebBackend(Backend):
                         else urljoin(target, name, allow_fragments=False)
                     )
                     with self.session.put(
-                        path_to_create, fp.read(), auth=auth, timeout=self.timeout
+                            path_to_create, fp.read(), auth=auth, timeout=self.timeout
                     ) as r:
                         if r.status_code == 409:
                             _writeable_error()
@@ -350,7 +364,7 @@ class WebBackend(Backend):
         """
         # pylint: disable=arguments-renamed
         with self.session.get(
-            self.device_location + "/cp/version.json", timeout=self.timeout
+                self.device_location + "/cp/version.json", timeout=self.timeout
         ) as r:
             # pylint: disable=no-member
             if r.status_code != requests.codes.ok:
@@ -378,15 +392,24 @@ class WebBackend(Backend):
         u = urlparse(url)
         auth = HTTPBasicAuth("", u.password)
         with self.session.get(
-            url, auth=auth, headers={"Accept": "application/json"}, timeout=self.timeout
+                url, auth=auth, headers={"Accept": "application/json"}, timeout=self.timeout
         ) as r:
             r.raise_for_status()
 
             directory_mods = []
             single_file_mods = []
 
-            for entry in r.json()["files"]:
+            resp_data = r.json()
+            _files = []
 
+            if isinstance(resp_data, list):
+                # Circuitpython <= 8.2.X returns a list 
+                _files = resp_data
+            elif isinstance(resp_data, dict):
+                # Circuitpython >= 9.0.X returns an object with 'files' key
+                _files = resp_data["files"]
+
+            for entry in _files:
                 entry_name = entry.get("name")
                 if entry.get("directory"):
                     directory_mods.append(entry_name)
@@ -417,31 +440,40 @@ class WebBackend(Backend):
                 dm_url = dm
 
             with self.session.get(
-                dm_url,
-                auth=auth,
-                headers={"Accept": "application/json"},
-                timeout=self.timeout,
+                    dm_url,
+                    auth=auth,
+                    headers={"Accept": "application/json"},
+                    timeout=self.timeout,
             ) as r:
                 r.raise_for_status()
                 mpy = False
+                resp_data = r.json()
+                _files = []
 
-                for entry in r.json()["files"]:
+                if isinstance(resp_data, list):
+                    # Circuitpython <= 8.2.X returns a list 
+                    _files = resp_data
+                elif isinstance(resp_data, dict):
+                    # Circuitpython >= 9.0.X returns an object with 'files' key
+                    _files = resp_data["files"]
+
+                for entry in _files:
                     entry_name = entry.get("name")
                     if not entry.get("directory") and (
-                        entry_name.endswith(".py") or entry_name.endswith(".mpy")
+                            entry_name.endswith(".py") or entry_name.endswith(".mpy")
                     ):
                         if entry_name.endswith(".mpy"):
                             mpy = True
 
                         with self.session.get(
-                            dm_url + entry_name, auth=auth, timeout=self.timeout
+                                dm_url + entry_name, auth=auth, timeout=self.timeout
                         ) as rr:
                             rr.raise_for_status()
                             idx = entry_name.rfind(".")
                             with tempfile.NamedTemporaryFile(
-                                prefix=entry_name[:idx] + "-",
-                                suffix=entry_name[idx:],
-                                delete=False,
+                                    prefix=entry_name[:idx] + "-",
+                                    suffix=entry_name[idx:],
+                                    delete=False,
                             ) as fp:
                                 fp.write(rr.content)
                                 tmp_name = fp.name
@@ -473,7 +505,7 @@ class WebBackend(Backend):
                 r.raise_for_status()
                 idx = sfm.rfind(".")
                 with tempfile.NamedTemporaryFile(
-                    prefix=sfm[:idx] + "-", suffix=sfm[idx:], delete=False
+                        prefix=sfm[:idx] + "-", suffix=sfm[idx:], delete=False
                 ) as fp:
                     fp.write(r.content)
                     tmp_name = fp.name
@@ -485,9 +517,13 @@ class WebBackend(Backend):
     def _create_library_directory(self, device_path, library_path):
         url = urlparse(device_path)
         auth = HTTPBasicAuth("", url.password)
+        print(f"dev path: {device_path} lib path: {library_path}")
         with self.session.put(library_path, auth=auth, timeout=self.timeout) as r:
+            print(f"resp status: {r.status_code}")
+            print(r.text)
             if r.status_code == 409:
-                _writeable_error()
+                # assume /lib/ already exists 
+                pass
             r.raise_for_status()
 
     def _install_module_mpy(self, bundle, metadata):
@@ -496,6 +532,7 @@ class WebBackend(Backend):
         :param library_path library path
         :param metadata dictionary.
         """
+        print("inside install module mpy")
         module_name = os.path.basename(metadata["path"]).replace(".py", ".mpy")
         if not module_name:
             # Must be a directory based module.
@@ -508,6 +545,8 @@ class WebBackend(Backend):
             self.install_dir_http(bundle_path)
 
         elif os.path.isfile(bundle_path):
+            print("about to call install file http")
+            print(f"bundle path: {bundle_path}")
             self.install_file_http(bundle_path)
 
         else:
@@ -612,33 +651,60 @@ class WebBackend(Backend):
         Returns the free space on the device in bytes.
         """
         auth = HTTPBasicAuth("", self.password)
-        with self.session.get(
-            urljoin(self.device_location, "fs/"),
-            auth=auth,
-            headers={"Accept": "application/json"},
-            timeout=self.timeout,
-        ) as r:
-            r.raise_for_status()
-            if r.json().get("free") is None:
-                self.logger.error("Unable to get free block count from device.")
-                click.secho("Unable to get free block count from device.", fg="red")
-            elif r.json().get("block_size") is None:
-                self.logger.error("Unable to get block size from device.")
-                click.secho("Unable to get block size from device.", fg="red")
-            elif r.json().get("writable") is None or r.json().get("writable") is False:
-                self.logger.error(
-                    "CircuitPython Web Workflow Device not writable\n - "
-                    "Remount storage as writable to device (not PC)"
-                )
-                click.secho(
-                    "CircuitPython Web Workflow Device not writable\n - "
-                    "Remount storage as writable to device (not PC)",
-                    fg="red",
-                )
-            else:
-                return r.json()["free"] * r.json()["block_size"]  # bytes
-            sys.exit(1)
 
+        version_resp = self.session.get(urljoin(self.device_location, "cp/version.json"),
+                                        auth=auth,
+                                        headers={"Accept": "application/json"},
+                                        timeout=self.timeout,
+                                        ).json()
+
+        if version_resp["web_api_version"] >= 4:
+            with self.session.get(
+                    urljoin(self.device_location, "fs/"),
+                    auth=auth,
+                    headers={"Accept": "application/json"},
+                    timeout=self.timeout,
+            ) as r:
+                r.raise_for_status()
+                print(f"resp data:   {r.json()}")
+                if r.json().get("free") is None:
+                    self.logger.error("Unable to get free block count from device.")
+                    click.secho("Unable to get free block count from device.", fg="red")
+                elif r.json().get("block_size") is None:
+                    self.logger.error("Unable to get block size from device.")
+                    click.secho("Unable to get block size from device.", fg="red")
+                elif r.json().get("writable") is None or r.json().get("writable") is False:
+                    self.logger.error(
+                        "CircuitPython Web Workflow Device not writable\n - "
+                        "Remount storage as writable to device (not PC)"
+                    )
+                    click.secho(
+                        "CircuitPython Web Workflow Device not writable\n - "
+                        "Remount storage as writable to device (not PC)",
+                        fg="red",
+                    )
+                else:
+                    return r.json()["free"] * r.json()["block_size"]  # bytes
+                sys.exit(1)
+        elif version_resp["web_api_version"] >= 2:
+            with self.session.get(
+                    urljoin(self.device_location, "cp/diskinfo.json"),
+                    auth=auth,
+                    headers={"Accept": "application/json"},
+                    timeout=self.timeout,
+            ) as r:
+                r.raise_for_status()
+                if r.json().get("free") is None:
+                    self.logger.error("Unable to get free block count from device.")
+                    click.secho("Unable to get free block count from device.", fg="red")
+                elif r.json().get("block_size") is None:
+                    self.logger.error("Unable to get block size from device.")
+                    click.secho("Unable to get block size from device.", fg="red")
+                else:
+                    return r.json()["free"] * r.json()["block_size"]  # bytes
+                sys.exit(1)
+        else:
+            click.secho("Minimum Circuitpython web_workflow_api version is 2.", fg="red")
 
 class DiskBackend(Backend):
     """
@@ -683,9 +749,9 @@ class DiskBackend(Backend):
         if not self.version_info:
             try:
                 with open(
-                    os.path.join(self.device_location, "boot_out.txt"),
-                    "r",
-                    encoding="utf-8",
+                        os.path.join(self.device_location, "boot_out.txt"),
+                        "r",
+                        encoding="utf-8",
                 ) as boot:
                     boot_out_contents = boot.read()
                     circuit_python, board_id = self.parse_boot_out_file(

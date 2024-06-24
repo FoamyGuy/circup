@@ -1064,7 +1064,7 @@ class BLEBackend(Backend):
     DIRECTORY = 0x01
 
     def __init__(
-            self, ble_mac, bleak_client, logger, timeout=10
+            self, ble_mac, logger, timeout=10
     ):
         super().__init__(logger)
         self.device_location = ble_mac
@@ -1073,7 +1073,7 @@ class BLEBackend(Backend):
         self.ready_to_return = False
         self.return_value = None
         self.timeout = timeout
-        self.client = bleak_client
+
 
     @property
     def address(self):
@@ -1168,7 +1168,7 @@ class BLEBackend(Backend):
 
         async def callback_handler(_, data):
             if data != self.previous_data_packet:
-                # print(f"Received notify callback with data:\n{data}")
+                #print(f"Received notify callback with data:\n{data}")
                 self.previous_data_packet = data
                 self.inc_data_buffer += data
 
@@ -1179,52 +1179,32 @@ class BLEBackend(Backend):
                     self.ready_to_return = True
 
         async def ble_listdir(address):
-            # async with BleakClient(address, timeout=self.timeout) as client:
-            #    result = await client.pair()
+            async with BleakClient(address, timeout=self.timeout) as client:
+                result = await client.pair()
 
-            await self.client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+                await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
 
-            encoded = struct.pack("<BxH", BLEBackend.LISTDIR, len(dirpath))
-            await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID,
-                                              encoded + dirpath.encode("utf-8"))
+                encoded = struct.pack("<BxH", BLEBackend.LISTDIR, len(dirpath))
+                await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID,
+                                                  encoded + dirpath.encode("utf-8"))
 
+        print("before ble_listdir")
         asyncio.run(ble_listdir(self.address))
+        print("after ble_listdir")
 
         while not self.ready_to_return:
             asyncio.sleep(0.1)
+            #time.sleep(0.01)
 
         return self.return_value
-    # 
-    # @property
-    # def client(self):
-    #     return self._client
-        
-        
-        # async def connect_ble():
-        #     print("inside")
-        #     self._client = BleakClient(self.address, timeout=self.timeout)
-        #     await self._client.connect()
-        #     result = self._client.pair()
-        # 
-        # if self._client is None:
-        #     print("b3efore")
-        #     await connect_ble()
-        #     #await connect_ble()
-        # 
-        # while self._client is None:
-        #     #await asyncio.sleep(0.1)
-        #     time.sleep(0.01)
-        # 
-        # return self._client
-
 
     def is_device_present(self):
         async def ble_check_version(address):
-            # async with BleakClient(address, timeout=self.timeout) as client:
-            # result = await client.pair()
-            ble_api_version_number = await self.client.read_gatt_char(BLEBackend.WORKFLOW_VERSION_CHARACTERISTIC)
+            async with BleakClient(address, timeout=self.timeout) as client:
+                result = await client.pair()
+                ble_api_version_number = await client.read_gatt_char(BLEBackend.WORKFLOW_VERSION_CHARACTERISTIC)
 
-            return struct.unpack('<I', ble_api_version_number)[0]
+                return struct.unpack('<I', ble_api_version_number)[0]
 
         ble_api_version = asyncio.run(ble_check_version(self.device_location))
         print(f"inside is_device_present(). ble api version: {ble_api_version}")

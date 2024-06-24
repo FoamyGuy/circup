@@ -93,12 +93,6 @@ def main(  # pylint: disable=too-many-locals
     print(f"host: {ctx.params['host']}")
 
     print(f"using webworkflow: {using_webworkflow}")
-    
-    async def connect_ble_client():
-        client = BleakClient(ble_mac, timeout=timeout)
-        await client.connect()
-        result = await client.pair()
-        return client
 
     if using_webworkflow:
         if host == "circuitpython.local":
@@ -122,15 +116,11 @@ def main(  # pylint: disable=too-many-locals
             sys.exit(1)
     elif using_bleworkflow:
         
-        client = asyncio.run(connect_ble_client()) 
-        
         ctx.obj["backend"] = BLEBackend(
-            ble_mac=ble_mac, bleak_client=client, logger=logger, timeout=timeout
+            ble_mac=ble_mac, logger=logger, timeout=timeout
         )
         device_path = ble_mac
 
-        
-        
     if verbose:
         # Configure additional logging to stdout.
         ctx.obj["verbose"] = True
@@ -191,11 +181,12 @@ def ls_cli(ctx, file):  # pragma: no cover
     print(f"took {time.monotonic() - start}")
 
     click.echo("Size\tName")
+    
     for cur_file in sorted_by_directory_then_alpha(files):
         click.echo(
             f"{cur_file['file_size']}\t{cur_file['name']}{'/' if cur_file['directory'] else ''}"
         )
-    ctx.obj["backend"].client.disconnect()
+    #ctx.obj["backend"].client.disconnect()
 
 
 @main.command("put")

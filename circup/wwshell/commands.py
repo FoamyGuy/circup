@@ -10,6 +10,7 @@ functionality they provide is provided by the functions from util_functions.py,
 and the respective Backends which *are* tested. Most of the logic of the following
 functions is to prepare things for presentation to / interaction with the user.
 """
+import asyncio
 import os
 import time
 import sys
@@ -18,11 +19,11 @@ import update_checker
 import click
 import requests
 
-
-from circup.backends import WebBackend
+from circup.backends import WebBackend, BLEBackend
 from circup.logging import logger, log_formatter, LOGFILE
 from circup.shared import BOARDLESS_COMMANDS
-
+from bleak.exc import BleakDeviceNotFoundError
+from bleak import BleakClient
 from circup.command_utils import (
     get_device_path,
     get_circup_version,
@@ -47,13 +48,18 @@ from circup.command_utils import (
 @click.option(
     "--password",
     help="Password to use for authentication when --host is used."
-    " You can optionally set an environment variable CIRCUP_WEBWORKFLOW_PASSWORD"
-    " instead of passing this argument. If both exist the CLI arg takes precedent.",
+         " You can optionally set an environment variable CIRCUP_WEBWORKFLOW_PASSWORD"
+         " instead of passing this argument. If both exist the CLI arg takes precedent.",
 )
 @click.option(
     "--timeout",
     default=30,
     help="Specify the timeout in seconds for any network operations.",
+)
+@click.option(
+    "--ble-mac",
+    help="BLE Mac Address to use for BLE Workflow.",
+    default=None,
 )
 @click.version_option(
     prog_name="CircFile",
@@ -61,12 +67,13 @@ from circup.command_utils import (
 )
 @click.pass_context
 def main(  # pylint: disable=too-many-locals
-    ctx,
-    verbose,
-    path,
-    host,
-    password,
-    timeout,
+        ctx,
+        verbose,
+        path,
+        host,
+        password,
+        timeout,
+        ble_mac,
 ):  # pragma: no cover
     """
     A tool to manage files CircuitPython device over web workflow.
@@ -79,10 +86,20 @@ def main(  # pylint: disable=too-many-locals
         password = os.getenv("CIRCUP_WEBWORKFLOW_PASSWORD")
 
     device_path = get_device_path(host, password, path)
+    print(ctx.params)
+    using_bleworkflow = "ble_mac" in ctx.params.keys() and ctx.params["ble_mac"] is not None
 
-    using_webworkflow = "host" in ctx.params.keys() and ctx.params["host"] is not None
+    using_webworkflow = "host" in ctx.params.keys() and ctx.params["host"] is not None and not using_bleworkflow
     print(f"host: {ctx.params['host']}")
+
     print(f"using webworkflow: {using_webworkflow}")
+    
+    async def connect_ble_client():
+        client = BleakClient(ble_mac, timeout=timeout)
+        await client.connect()
+        result = await client.pair()
+        return client
+
     if using_webworkflow:
         if host == "circuitpython.local":
             click.echo("Checking versions.json on circuitpython.local to find hostname")
@@ -103,7 +120,17 @@ def main(  # pylint: disable=too-many-locals
         except RuntimeError as e:
             click.secho(e, fg="red")
             sys.exit(1)
+    elif using_bleworkflow:
+        
+        client = asyncio.run(connect_ble_client()) 
+        
+        ctx.obj["backend"] = BLEBackend(
+            ble_mac=ble_mac, bleak_client=client, logger=logger, timeout=timeout
+        )
+        device_path = ble_mac
 
+        
+        
     if verbose:
         # Configure additional logging to stdout.
         ctx.obj["verbose"] = True
@@ -129,11 +156,18 @@ def main(  # pylint: disable=too-many-locals
 
     ctx.obj["DEVICE_PATH"] = device_path
 
-    if device_path is None or not ctx.obj["backend"].is_device_present():
-        click.secho("Could not find a connected CircuitPython device.", fg="red")
-        sys.exit(1)
-    else:
-        click.echo("Found device at {}.".format(device_path))
+    start = time.monotonic()
+    try:
+        if device_path is None or not ctx.obj["backend"].is_device_present():
+            click.secho("Could not find a connected CircuitPython device.", fg="red")
+            sys.exit(1)
+        else:
+            click.echo("Found device at {}.".format(device_path))
+    except BleakDeviceNotFoundError as e:
+        print(f"took {time.monotonic() - start}")
+        raise e
+
+    print(f"took {time.monotonic() - start}")
 
 
 @main.command("ls")
@@ -148,13 +182,20 @@ def ls_cli(ctx, file):  # pragma: no cover
     if not file.endswith("/"):
         file += "/"
     click.echo(f"running: ls {file}")
+    start = time.monotonic()
+    try:
+        files = ctx.obj["backend"].list_dir(file)
+    except BleakDeviceNotFoundError as e:
+        print(f"took {time.monotonic() - start}")
+        raise e
+    print(f"took {time.monotonic() - start}")
 
-    files = ctx.obj["backend"].list_dir(file)
     click.echo("Size\tName")
     for cur_file in sorted_by_directory_then_alpha(files):
         click.echo(
             f"{cur_file['file_size']}\t{cur_file['name']}{'/' if cur_file['directory'] else ''}"
         )
+    ctx.obj["backend"].client.disconnect()
 
 
 @main.command("put")

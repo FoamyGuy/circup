@@ -7,15 +7,18 @@ Backend classes that represent interfaces to physical devices.
 """
 import os
 import shutil
+import struct
 import sys
 import socket
 import tempfile
+import time
 from urllib.parse import urlparse, urljoin
 import click
 import requests
 from requests.adapters import HTTPAdapter
 from requests.auth import HTTPBasicAuth
-
+from bleak import BleakClient
+import asyncio
 from circup.shared import DATA_DIR, BAD_FILE_FORMAT, extract_metadata, _get_modules_file
 
 #: The location to store a local copy of code.py for use with --auto and
@@ -105,7 +108,7 @@ class Backend:
 
     # pylint: disable=too-many-locals,too-many-branches,too-many-arguments,too-many-nested-blocks,too-many-statements
     def install_module(
-        self, device_path, device_modules, name, pyext, mod_names, upgrade=False
+            self, device_path, device_modules, name, pyext, mod_names, upgrade=False
     ):  # pragma: no cover
         """
         Finds a connected device and installs a given module name if it
@@ -283,7 +286,7 @@ class WebBackend(Backend):
     """
 
     def __init__(  # pylint: disable=too-many-arguments
-        self, host, password, logger, timeout=10, version_override=None
+            self, host, password, logger, timeout=10, version_override=None
     ):
         super().__init__(logger)
         if password is None:
@@ -387,7 +390,7 @@ class WebBackend(Backend):
                 )
 
                 with self.session.put(
-                    path_to_create, auth=auth, timeout=self.timeout
+                        path_to_create, auth=auth, timeout=self.timeout
                 ) as r:
                     if r.status_code == 409:
                         _writeable_error()
@@ -404,7 +407,7 @@ class WebBackend(Backend):
                         else urljoin(target, name, allow_fragments=False)
                     )
                     with self.session.put(
-                        path_to_create, fp.read(), auth=auth, timeout=self.timeout
+                            path_to_create, fp.read(), auth=auth, timeout=self.timeout
                     ) as r:
                         if r.status_code == 409:
                             _writeable_error()
@@ -423,7 +426,7 @@ class WebBackend(Backend):
 
         # pylint: disable=arguments-renamed
         with self.session.get(
-            self.device_location + "/cp/version.json", timeout=self.timeout
+                self.device_location + "/cp/version.json", timeout=self.timeout
         ) as r:
             # pylint: disable=no-member
             if r.status_code != requests.codes.ok:
@@ -451,7 +454,7 @@ class WebBackend(Backend):
         u = urlparse(url)
         auth = HTTPBasicAuth("", u.password)
         with self.session.get(
-            url, auth=auth, headers={"Accept": "application/json"}, timeout=self.timeout
+                url, auth=auth, headers={"Accept": "application/json"}, timeout=self.timeout
         ) as r:
             r.raise_for_status()
 
@@ -490,10 +493,10 @@ class WebBackend(Backend):
                 dm_url = dm
 
             with self.session.get(
-                dm_url,
-                auth=auth,
-                headers={"Accept": "application/json"},
-                timeout=self.timeout,
+                    dm_url,
+                    auth=auth,
+                    headers={"Accept": "application/json"},
+                    timeout=self.timeout,
             ) as r:
                 r.raise_for_status()
                 mpy = False
@@ -501,20 +504,20 @@ class WebBackend(Backend):
                 for entry in r.json()["files"]:
                     entry_name = entry.get("name")
                     if not entry.get("directory") and (
-                        entry_name.endswith(".py") or entry_name.endswith(".mpy")
+                            entry_name.endswith(".py") or entry_name.endswith(".mpy")
                     ):
                         if entry_name.endswith(".mpy"):
                             mpy = True
 
                         with self.session.get(
-                            dm_url + entry_name, auth=auth, timeout=self.timeout
+                                dm_url + entry_name, auth=auth, timeout=self.timeout
                         ) as rr:
                             rr.raise_for_status()
                             idx = entry_name.rfind(".")
                             with tempfile.NamedTemporaryFile(
-                                prefix=entry_name[:idx] + "-",
-                                suffix=entry_name[idx:],
-                                delete=False,
+                                    prefix=entry_name[:idx] + "-",
+                                    suffix=entry_name[idx:],
+                                    delete=False,
                             ) as fp:
                                 fp.write(rr.content)
                                 tmp_name = fp.name
@@ -546,7 +549,7 @@ class WebBackend(Backend):
                 r.raise_for_status()
                 idx = sfm.rfind(".")
                 with tempfile.NamedTemporaryFile(
-                    prefix=sfm[:idx] + "-", suffix=sfm[idx:], delete=False
+                        prefix=sfm[:idx] + "-", suffix=sfm[idx:], delete=False
                 ) as fp:
                     fp.write(r.content)
                     tmp_name = fp.name
@@ -600,7 +603,7 @@ class WebBackend(Backend):
         """
         auth = HTTPBasicAuth("", self.password)
         with self.session.get(
-            self.FS_URL + target_file, timeout=self.timeout, auth=auth
+                self.FS_URL + target_file, timeout=self.timeout, auth=auth
         ) as r:
             if r.status_code == 404:
                 click.secho(f"{target_file} was not found on the device", "red")
@@ -768,10 +771,10 @@ class WebBackend(Backend):
         """
         auth = HTTPBasicAuth("", self.password)
         with self.session.get(
-            urljoin(self.device_location, "fs/"),
-            auth=auth,
-            headers={"Accept": "application/json"},
-            timeout=self.timeout,
+                urljoin(self.device_location, "fs/"),
+                auth=auth,
+                headers={"Accept": "application/json"},
+                timeout=self.timeout,
         ) as r:
             r.raise_for_status()
             if r.json().get("free") is None:
@@ -800,10 +803,10 @@ class WebBackend(Backend):
         """
         auth = HTTPBasicAuth("", self.password)
         with self.session.get(
-            urljoin(self.device_location, f"fs/{dirpath if dirpath else ''}"),
-            auth=auth,
-            headers={"Accept": "application/json"},
-            timeout=self.timeout,
+                urljoin(self.device_location, f"fs/{dirpath if dirpath else ''}"),
+                auth=auth,
+                headers={"Accept": "application/json"},
+                timeout=self.timeout,
         ) as r:
             print(r.content)
             return r.json()["files"]
@@ -857,9 +860,9 @@ class DiskBackend(Backend):
         if not self.version_info:
             try:
                 with open(
-                    os.path.join(self.device_location, "boot_out.txt"),
-                    "r",
-                    encoding="utf-8",
+                        os.path.join(self.device_location, "boot_out.txt"),
+                        "r",
+                        encoding="utf-8",
                 ) as boot:
                     boot_out_contents = boot.read()
                     circuit_python, board_id = self.parse_boot_out_file(
@@ -1027,3 +1030,211 @@ class DiskBackend(Backend):
         # pylint: disable=unused-variable
         _, total, free = shutil.disk_usage(self.device_location)
         return free
+
+
+class BLEBackend(Backend):
+    WORKFLOW_VERSION_CHARACTERISTIC = "adaf0100-4669-6c65-5472-616e73666572"
+    WORKFLOW_TRANSFER_UUID = "adaf0200-4669-6c65-5472-616e73666572"
+
+    # Commands
+    INVALID = 0x00
+    READ = 0x10
+    READ_DATA = 0x11
+    READ_PACING = 0x12
+    WRITE = 0x20
+    WRITE_PACING = 0x21
+    WRITE_DATA = 0x22
+    DELETE = 0x30
+    DELETE_STATUS = 0x31
+    MKDIR = 0x40
+    MKDIR_STATUS = 0x41
+    LISTDIR = 0x50
+    LISTDIR_ENTRY = 0x51
+    MOVE = 0x60
+    MOVE_STATUS = 0x61
+
+    # Responses
+    # 0x00 is INVALID
+    OK = 0x01  # pylint: disable=invalid-name
+    ERROR = 0x02
+    ERROR_NO_FILE = 0x03
+    ERROR_PROTOCOL = 0x04
+
+    # Flags
+    DIRECTORY = 0x01
+
+    def __init__(
+            self, ble_mac, bleak_client, logger, timeout=10
+    ):
+        super().__init__(logger)
+        self.device_location = ble_mac
+        self.inc_data_buffer = bytearray()
+        self.previous_data_packet = None
+        self.ready_to_return = False
+        self.return_value = None
+        self.timeout = timeout
+        self.client = bleak_client
+
+    @property
+    def address(self):
+        return self.device_location
+
+    def list_dir(self, dirpath):
+        """
+        Returns the list of files located in the given dirpath.
+        """
+        self.ready_to_return = False
+
+        def attempt_parse_entries(data_buffer):
+            paths = []
+            expected_entries = 0
+            found_entries = 0
+
+            i = 0
+            total = 10  # starting value that will be replaced by the first response
+            header_size = struct.calcsize("<BBHIIIQI")
+            path_length = 0
+            encoded_path = b""
+            file_size = 0
+            flags = 0
+            modification_time = 0
+
+            offset = 0
+            (
+                cmd,
+                status,
+                path_length,
+                i,
+                total,
+                flags,
+                modification_time,
+                file_size,
+            ) = struct.unpack_from("<BBHIIIQI", data_buffer, offset=offset)
+
+            expected_entries = total
+            # print(f"we're expecting to find {total} entries")
+
+            while found_entries < expected_entries:
+                offset += header_size
+                encoded_path = b""
+                # print(f"status: {status}")
+                # if cmd != 0x51:
+                #     raise ProtocolError()
+                # if status != FileTransferService.OK:
+                #     break
+
+                # print(f"min({path_length - len(encoded_path)}, {len(inc_data_buffer) - offset})")
+                path_read = min(path_length - len(encoded_path), len(data_buffer) - offset)
+                # print(f"path_read: {path_read}")
+
+                if path_read != path_length:
+                    # print("path_read doesn't match path_length, returning false")
+                    return False, list()
+
+                encoded_path += data_buffer[offset: offset + path_read]
+                # print(f"encoded path: {encoded_path}")
+                # print(f"expected path length: {path_length} | actual path length {len(encoded_path)}")
+
+                if len(encoded_path) != path_length:
+                    # print("encoded path is wrong length, returning false")
+                    return False, list()
+
+                # paths.append((encoded_path.decode("utf-8"), file_size, flags, modification_time))
+                # print(f"entry: {encoded_path.decode('utf-8')}")
+                # print(f"flags: {flags}")
+
+                paths.append({
+                    "file_size": file_size,
+                    "name": encoded_path.decode("utf-8"),
+                    "directory": flags & 0b1 == 1
+                })
+                found_entries += 1
+                if found_entries == expected_entries:
+                    return True, paths
+                offset += path_length
+                try:
+                    (
+                        cmd,
+                        status,
+                        path_length,
+                        i,
+                        total,
+                        flags,
+                        modification_time,
+                        file_size,
+                    ) = struct.unpack_from("<BBHIIIQI", data_buffer, offset=offset)
+                except struct.error:
+                    return False, list()
+
+        async def callback_handler(_, data):
+            if data != self.previous_data_packet:
+                # print(f"Received notify callback with data:\n{data}")
+                self.previous_data_packet = data
+                self.inc_data_buffer += data
+
+                success, paths = attempt_parse_entries(self.inc_data_buffer)
+
+                if success:
+                    self.return_value = paths
+                    self.ready_to_return = True
+
+        async def ble_listdir(address):
+            # async with BleakClient(address, timeout=self.timeout) as client:
+            #    result = await client.pair()
+
+            await self.client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+
+            encoded = struct.pack("<BxH", BLEBackend.LISTDIR, len(dirpath))
+            await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID,
+                                              encoded + dirpath.encode("utf-8"))
+
+        asyncio.run(ble_listdir(self.address))
+
+        while not self.ready_to_return:
+            asyncio.sleep(0.1)
+
+        return self.return_value
+    # 
+    # @property
+    # def client(self):
+    #     return self._client
+        
+        
+        # async def connect_ble():
+        #     print("inside")
+        #     self._client = BleakClient(self.address, timeout=self.timeout)
+        #     await self._client.connect()
+        #     result = self._client.pair()
+        # 
+        # if self._client is None:
+        #     print("b3efore")
+        #     await connect_ble()
+        #     #await connect_ble()
+        # 
+        # while self._client is None:
+        #     #await asyncio.sleep(0.1)
+        #     time.sleep(0.01)
+        # 
+        # return self._client
+
+
+    def is_device_present(self):
+        async def ble_check_version(address):
+            # async with BleakClient(address, timeout=self.timeout) as client:
+            # result = await client.pair()
+            ble_api_version_number = await self.client.read_gatt_char(BLEBackend.WORKFLOW_VERSION_CHARACTERISTIC)
+
+            return struct.unpack('<I', ble_api_version_number)[0]
+
+        ble_api_version = asyncio.run(ble_check_version(self.device_location))
+        print(f"inside is_device_present(). ble api version: {ble_api_version}")
+        if ble_api_version < 4:
+            self.logger.error(
+                f"Device running unsupported BLE API version {ble_api_version} < 4."
+            )
+            click.secho(
+                f"Device running unsupported BLE API version {ble_api_version} < 4.",
+                fg="red",
+            )
+            return False
+        return True

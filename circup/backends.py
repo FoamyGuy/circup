@@ -1063,21 +1063,136 @@ class BLEBackend(Backend):
     # Flags
     DIRECTORY = 0x01
 
+    FILE_READ_CHUNK_SIZE = 1024
+
+    READ_HEADER_SIZE = struct.calcsize("<BBxxIII")
+
     def __init__(
             self, ble_mac, logger, timeout=10
     ):
         super().__init__(logger)
         self.device_location = ble_mac
         self.inc_data_buffer = bytearray()
-        self.previous_data_packet = None
+        self.previous_data_packets = []
         self.ready_to_return = False
         self.return_value = None
         self.timeout = timeout
-
+        self.read_transaction_finished = False
+        self.receiving_chunk_num = 1
+        self.client = None
 
     @property
     def address(self):
         return self.device_location
+
+    def download_file(self, target_file, location_to_paste):
+        """
+        Download a file from the MCU device to the local host PC
+        :param target_file: The file on the MCU to download
+        :param location_to_paste: The location on the host PC to put the downloaded copy.
+        :return:
+        """
+
+        async def attempt_parse_file(data_buffer):
+
+            #print(f"inside attempt parse file: {data_buffer}")
+            start_offset = 0
+            current_offset = start_offset
+            chunk_done = True
+            content_length = None
+            chunk_end = 0
+            # pylint: disable=unsupported-assignment-operation
+
+            #print(f"header size: {BLEBackend.READ_HEADER_SIZE}")
+
+            (
+                cmd,
+                status,
+                content_offset,
+                content_length,
+                chunk_length,
+            ) = struct.unpack_from("<BBxxIII", data_buffer)
+            # print("unpacked vals: ")
+            # print((
+            #     cmd,
+            #     status,
+            #     content_offset,
+            #     content_length,
+            #     chunk_length,
+            # ))
+            # print(f"about to return {len(data_buffer)} / {content_length + BLEBackend.READ_HEADER_SIZE}")
+            if len(data_buffer) == content_length + BLEBackend.READ_HEADER_SIZE:
+                print()
+                return True, data_buffer[16:]
+            else:
+                # have we received the full chunk we requested?
+                if len(data_buffer) == (
+                        BLEBackend.FILE_READ_CHUNK_SIZE * self.receiving_chunk_num) + BLEBackend.READ_HEADER_SIZE:
+                    cur_offset = len(data_buffer) - BLEBackend.READ_HEADER_SIZE
+                    encoded = struct.pack(
+                        "<BBxxII",
+                        BLEBackend.READ_PACING,
+                        BLEBackend.OK,
+                        cur_offset,
+                        BLEBackend.FILE_READ_CHUNK_SIZE,
+                    )
+                    #print(f"asking for more data, offset: {cur_offset}")
+                    # print(
+                    #     f"packed vals: {(BLEBackend.READ_PACING, BLEBackend.OK, cur_offset, self.FILE_READ_CHUNK_SIZE)}")
+                    print(".", end="")
+                    await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded)
+                return False, None
+
+        async def callback_handler(_, data):
+            if data not in self.previous_data_packets:
+                #print(f"Received notify callback with data:\n{data}")
+                # received_data = data
+                self.previous_data_packets.append(data)
+
+                (
+                    cmd,
+                    status,
+                    content_offset,
+                    content_length,
+                    chunk_length,
+                ) = struct.unpack_from("<BBxxIII", data)
+
+                if len(data) == BLEBackend.READ_HEADER_SIZE and cmd == BLEBackend.READ_DATA:
+                    if content_offset != 0:
+                        #print("ignoring header packet")
+                        self.receiving_chunk_num += 1
+                        return
+
+                self.inc_data_buffer += data
+
+                # success, paths = attempt_parse_entries(inc_data_buffer)
+
+                success, file_content = await attempt_parse_file(self.inc_data_buffer)
+                #print(f"success: {success}")
+                #print(f"content: {file_content}")
+                if success:
+                    with open(f"{location_to_paste}/{target_file}", "w") as f:
+                        f.write(file_content.decode())
+                    print("File Download Complete")
+                    self.read_transaction_finished = True
+
+        async def ble_download_file(address, target_filepath):
+            async with BleakClient(address, timeout=self.timeout) as client:
+                self.client = client
+                result = await client.pair()
+                await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+
+                # file_path = "/code.py".encode("utf-8") 
+                file_path = f"/{target_filepath}".encode("utf-8")
+                encoded_cmd = struct.pack("<BxHII",
+                                          BLEBackend.READ,
+                                          len(file_path),
+                                          0, BLEBackend.FILE_READ_CHUNK_SIZE)
+
+                await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd + file_path)
+
+
+        asyncio.run(ble_download_file(self.address, target_file))
 
     def list_dir(self, dirpath):
         """
@@ -1167,9 +1282,9 @@ class BLEBackend(Backend):
                     return False, list()
 
         async def callback_handler(_, data):
-            if data != self.previous_data_packet:
-                #print(f"Received notify callback with data:\n{data}")
-                self.previous_data_packet = data
+            if data != self.previous_data_packets:
+                # print(f"Received notify callback with data:\n{data}")
+                self.previous_data_packets = data
                 self.inc_data_buffer += data
 
                 success, paths = attempt_parse_entries(self.inc_data_buffer)
@@ -1186,7 +1301,7 @@ class BLEBackend(Backend):
 
                 encoded = struct.pack("<BxH", BLEBackend.LISTDIR, len(dirpath))
                 await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID,
-                                                  encoded + dirpath.encode("utf-8"))
+                                             encoded + dirpath.encode("utf-8"))
 
         print("before ble_listdir")
         asyncio.run(ble_listdir(self.address))
@@ -1194,7 +1309,7 @@ class BLEBackend(Backend):
 
         while not self.ready_to_return:
             asyncio.sleep(0.1)
-            #time.sleep(0.01)
+            # time.sleep(0.01)
 
         return self.return_value
 

@@ -222,7 +222,7 @@ def put_cli(ctx, file, location, overwrite):
 
 @main.command("get")
 @click.argument("file", required=True, nargs=1)
-@click.argument("location", required=False, nargs=1)
+@click.argument("location", required=False, nargs=1, default="./")
 @click.pass_context
 def get_cli(ctx, file, location):  # pragma: no cover
     """

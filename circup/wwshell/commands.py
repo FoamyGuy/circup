@@ -191,7 +191,7 @@ def ls_cli(ctx, file):  # pragma: no cover
 
 @main.command("put")
 @click.argument("file", required=True, nargs=1)
-@click.argument("location", required=False, nargs=1, default="")
+@click.argument("location", required=False, nargs=1, default="/")
 @click.option("--overwrite", is_flag=True, help="Overwrite the file if it exists.")
 @click.pass_context
 def put_cli(ctx, file, location, overwrite):
@@ -231,6 +231,8 @@ def get_cli(ctx, file, location):  # pragma: no cover
 
     click.echo(f"running: get {file} {location}")
     ctx.obj["backend"].download_file(file, location)
+    # exists = ctx.obj["backend"].file_exists(file)
+    # click.echo(f"file exists? {exists}")
 
 
 @main.command("rm")

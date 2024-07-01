@@ -1670,42 +1670,11 @@ class BLEBackend(Backend):
         self.return_value = None
         self.ready_to_return = False
 
-        async def callback_handler(_, data):
-            if data not in self.previous_data_packets:
-                print(f"Received notify callback with data:\n{data}")
-                # received_data = data
-                self.previous_data_packets.append(data)
-
-                (
-                    cmd,
-                    status,
-                    modified_time,
-                ) = struct.unpack_from("<BBxxxxxxQ", data)
-
-                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.OK:
-                    click.echo("mkdir completed")
-                    self.ready_to_return = True
-                    print(f"ready to return is: {self.ready_to_return}")
-                    #await self.client.unpair()
-                    #print("after unpair")
-                    #asyncio.get_event_loop().close()
-
-                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR:
-                    click.secho(
-                        "Error Creating Directory. Possibly existing file collision, or parent directory missing.",
-                        fg="red")
-                    self.ready_to_return = True
-                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR_READONLY:
-                    click.secho("Error Creating Directory. Storage is mounted readonly", fg="red")
-                    self.ready_to_return = True
-            
-            print("end of callback handler inside create dir")
-        
         async def ble_create_directory(address):
             async with BleakClient(address, timeout=self.timeout) as client:
                 self.client = client
                 result = await client.pair()
-                await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+
                 create_dir_path = f"{directory_to_create}".encode("utf-8")
                 encoded_cmd = struct.pack("<BxHxxxxQ",
                                           BLEBackend.MKDIR,
@@ -1717,12 +1686,30 @@ class BLEBackend(Backend):
 
                 await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd + create_dir_path)
                 print("after send create dir cmd")
+                resp_data = await client.read_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID)
+                (
+                    cmd,
+                    status,
+                    modified_time,
+                ) = struct.unpack_from("<BBxxxxxxQ", resp_data)
+
+                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.OK:
+                    click.echo("mkdir completed")
+
+                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR:
+                    click.secho(
+                        "Error Creating Directory. Possibly existing file collision, or parent directory missing.",
+                        fg="red")
+
+                if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR_READONLY:
+                    click.secho("Error Creating Directory. Storage is mounted readonly", fg="red")
+
                 return
 
         asyncio.run(ble_create_directory(self.address))
-
         print("after ble_create_directory")
-        while not self.ready_to_return:
-            asyncio.sleep(0.1)
-        return self.return_value
+        
+        # while not self.ready_to_return:
+        #     asyncio.sleep(0.1)
+        # return self.return_value
     

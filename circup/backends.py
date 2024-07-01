@@ -1279,6 +1279,172 @@ class BLEBackend(Backend):
 
         asyncio.run(ble_install_file(self.address))
 
+    def install_dir_ble(self, source, location=None):
+        """
+        Install directory to device using BLE workflow.
+        :param source source directory.
+        :param location the location on the device to copy the source
+          directory in to. If omitted is CIRCUITPY/lib/ used.
+        """
+
+        STATE_CREATING_TOP_DIR = 0
+        STATE_CREATING_DIRS = 1
+        STATE_UPLOADING_FILES = 2
+
+        context = {
+            "cur_state": STATE_CREATING_TOP_DIR,
+            "dirs_to_create": [],
+            "files_to_upload": [],
+            "cur_index": 0,
+            "location_to_paste": location if location is not None else "lib",
+            "cur_file_stats": os.stat("."),
+            "cur_file_content": bytes(),
+        }
+
+        for root, dirs, files in os.walk(source):
+
+            for name in dirs:
+                context["dirs_to_create"].append(name)
+
+            for name in files:
+                context["files_to_upload"].append(name)
+                pass
+
+        print(context)
+
+        async def _start_next_file_upload():
+            file_path_on_device = os.path.join(context["location_to_paste"], source,
+                                               context["files_to_upload"][context["cur_index"]]).encode("utf-8")
+
+            local_filepath = os.path.join(source, context["files_to_upload"][context["cur_index"]])
+            context["cur_file_stats"] = os.stat(local_filepath)
+            with open(local_filepath, "rb") as f:
+                context["cur_file_content"] = f.read()
+
+            encoded_cmd = struct.pack("<BxHIQI",
+                                      BLEBackend.WRITE,
+                                      len(file_path_on_device),
+                                      0, time.time_ns(), context["cur_file_stats"].st_size)
+
+            await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd + file_path_on_device)
+
+        async def _send_next_file_part(free_space, offset):
+            sending_size = free_space
+
+            encoded_cmd = struct.pack(
+                "<BBxxII",
+                BLEBackend.WRITE_DATA,
+                BLEBackend.OK,
+                offset,
+                sending_size,
+            )
+
+            outgoing_data = context["cur_file_content"][offset:offset + sending_size]
+
+            # print(".", end="")
+            print("sending:")
+            print(encoded_cmd + outgoing_data)
+
+            if len(outgoing_data) > 384:
+                # Bleak was unhappy trying to send the full packet.
+                # So split it into 3 writes: header | bytes[0-383] | bytes[384-end]
+                await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd)
+                await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, outgoing_data[:384])
+                await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, outgoing_data[384:])
+            else:
+                # packet is small enough so send the full thing at once.
+                await self.client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID,
+                                                  encoded_cmd + outgoing_data)
+
+        async def callback_handler(_, data):
+            if data not in self.previous_data_packets:
+                print(f"Received notify callback with data:\n{data}")
+                # received_data = data
+                self.previous_data_packets.append(data)
+
+                if context["cur_state"] == STATE_CREATING_TOP_DIR:
+                    # expecting response for creating dirs
+                    (
+                        cmd,
+                        status,
+                        modified_time,
+                    ) = struct.unpack_from("<BBxxxxxxQ", data)
+
+                    if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.OK:
+                        click.echo("mkdir top dir completed")
+                        # change states, and send the first create dir
+                        if len(context["dirs_to_create"]) > 0:
+                            context["cur_state"] = STATE_CREATING_DIRS
+
+                        else:
+                            # No directories, so start uploading files
+                            context["cur_state"] = STATE_UPLOADING_FILES
+
+                            # file_path = f"/{source}".encode("utf-8")
+                            await _start_next_file_upload()
+
+                    if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR:
+                        click.secho(
+                            "Error Creating Directory. Possibly existing file collision, or parent directory missing.",
+                            fg="red")
+                        raise RuntimeError(
+                            "Error Creating Directory. Possibly existing file collision, or parent directory missing.")
+                    if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR_READONLY:
+                        click.secho("Error Creating Directory. Storage is mounted readonly", fg="red")
+
+                elif context["cur_state"] == STATE_UPLOADING_FILES:
+                    (
+                        cmd,
+                        status,
+                        offset,
+                        truncated_time,
+                        free_space,
+                    ) = struct.unpack_from("<BBxxIQI", data)
+
+                    print("unpacked vals:")
+                    print((
+                        cmd,
+                        status,
+                        offset,
+                        truncated_time,
+                        free_space,
+                    ))
+
+                    if offset == context["cur_file_stats"].st_size and free_space == 0:
+                        # cur file upload finished
+                        context["cur_index"] += 1
+                        if context["cur_index"] >= len(context["files_to_upload"]):
+                            # all file uploads finished
+                            click.echo("All file uploads finished")
+                            return
+                        else:
+                            await _start_next_file_upload()
+
+                    await _send_next_file_part(free_space, offset)
+
+        async def ble_install_dir(address):
+            async with BleakClient(address, timeout=self.timeout) as client:
+                self.client = client
+                result = await client.pair()
+                await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+
+                # Create Top level directory
+                directory_to_create = os.path.join(context["location_to_paste"], source)
+
+                print(f"top level dir: {directory_to_create}")
+
+                await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
+                create_dir_path = f"{directory_to_create}".encode("utf-8")
+                encoded_cmd = struct.pack("<BxHxxxxQ",
+                                          BLEBackend.MKDIR,
+                                          len(create_dir_path),
+                                          time.time_ns())
+                print("sending:")
+                print(encoded_cmd + create_dir_path)
+                await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd + create_dir_path)
+
+        asyncio.run(ble_install_dir(self.address))
+
     def upload_file(self, target_file, location_to_paste):
         """
         copy a file from the host PC to the microcontroller
@@ -1293,7 +1459,7 @@ class BLEBackend(Backend):
             #     "/".join(("fs", location_to_paste, target_file, "")),
             # )
             # self.create_directory(self.device_location, create_directory_url)
-            # self.install_dir_http(target_file, location_to_paste)
+            self.install_dir_ble(target_file, location_to_paste)
             pass
         else:
             self.install_file_ble(target_file, location_to_paste)
@@ -1501,6 +1667,8 @@ class BLEBackend(Backend):
         return f"/{filename}"
 
     def create_directory(self, device_path, directory_to_create):
+        self.return_value = None
+        self.ready_to_return = False
 
         async def callback_handler(_, data):
             if data not in self.previous_data_packets:
@@ -1516,26 +1684,45 @@ class BLEBackend(Backend):
 
                 if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.OK:
                     click.echo("mkdir completed")
+                    self.ready_to_return = True
+                    print(f"ready to return is: {self.ready_to_return}")
+                    #await self.client.unpair()
+                    #print("after unpair")
+                    #asyncio.get_event_loop().close()
 
                 if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR:
                     click.secho(
                         "Error Creating Directory. Possibly existing file collision, or parent directory missing.",
                         fg="red")
-
+                    self.ready_to_return = True
                 if cmd == BLEBackend.MKDIR_STATUS and status == BLEBackend.ERROR_READONLY:
                     click.secho("Error Creating Directory. Storage is mounted readonly", fg="red")
-                    
+                    self.ready_to_return = True
+            
+            print("end of callback handler inside create dir")
+        
         async def ble_create_directory(address):
             async with BleakClient(address, timeout=self.timeout) as client:
                 self.client = client
                 result = await client.pair()
                 await client.start_notify(BLEBackend.WORKFLOW_TRANSFER_UUID, callback_handler)
-                create_dir_path = f"/{directory_to_create}".encode("utf-8")
+                create_dir_path = f"{directory_to_create}".encode("utf-8")
                 encoded_cmd = struct.pack("<BxHxxxxQ",
                                           BLEBackend.MKDIR,
                                           len(create_dir_path),
                                           time.time_ns())
 
+                print("sending:")
+                print(encoded_cmd + create_dir_path)
+
                 await client.write_gatt_char(BLEBackend.WORKFLOW_TRANSFER_UUID, encoded_cmd + create_dir_path)
+                print("after send create dir cmd")
+                return
 
         asyncio.run(ble_create_directory(self.address))
+
+        print("after ble_create_directory")
+        while not self.ready_to_return:
+            asyncio.sleep(0.1)
+        return self.return_value
+    
